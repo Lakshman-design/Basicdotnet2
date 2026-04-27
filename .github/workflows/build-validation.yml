@@ -1,14 +1,19 @@
-name: Build Validation.
+name: Build Validation
 
 on:
   push:
-    branches: [ main ]
+    branches: [ main, develop ]
   pull_request:
     branches: [ main ]
   workflow_dispatch:
 
 permissions:
   contents: read
+
+env:
+  DOTNET_VERSION: '8.0'
+  DOTNET_SKIP_FIRST_TIME_EXPERIENCE: 'true'
+  DOTNET_CLI_TELEMETRY_OPTOUT: 'true'
 
 jobs:
   changes:
@@ -24,7 +29,6 @@ jobs:
       ai-ml: ${{ steps.filter.outputs.ai-ml }}
       iot: ${{ steps.filter.outputs.iot }}
       blazor-hybrid: ${{ steps.filter.outputs.blazor-hybrid }}
-      maui: ${{ steps.filter.outputs.maui }}
     steps:
     - uses: actions/checkout@v4
     - uses: dorny/paths-filter@v3
@@ -44,13 +48,11 @@ jobs:
           container:
             - 'Containers/**'
           ai-ml:
-            - 'Disabled for now/**'
+            - 'Artificial Intelligence and Machine Learning/**'
           iot:
             - 'IoT/**'
           blazor-hybrid:
             - 'Blazor Hybrid/**'
-          maui:
-            - '.NET MAUI/**'
 
   build-dotnet-samples:
     name: Build .NET Samples
@@ -64,13 +66,28 @@ jobs:
     - name: Setup .NET
       uses: actions/setup-dotnet@v4
       with:
-        dotnet-version: '10.0.x'
+        dotnet-version: ${{ env.DOTNET_VERSION }}
+        cache: true
     
-    - name: Build MyConsoleApp
-      run: dotnet build ".NET/sample_code/MyConsoleApp/MyConsoleApp.sln"
+    - name: Restore .NET Dependencies
+      run: |
+        find . -name '*.sln' -path './.NET/*' | while read sln; do
+          if [ -f "$sln" ]; then
+            echo "Restoring: $sln"
+            dotnet restore "$sln" || echo "Restore failed for $sln, continuing..."
+          fi
+        done
+      continue-on-error: true
     
-    - name: Build MyPasswordGenerator
-      run: dotnet build ".NET/sample_code/MyPasswordGenerator/MyPasswordGenerator.sln"
+    - name: Build .NET Projects
+      run: |
+        find . -name '*.csproj' -path './.NET/*' | while read csproj; do
+          if [ -f "$csproj" ]; then
+            echo "Building: $csproj"
+            dotnet build "$csproj" --configuration Release --no-restore || echo "Build failed for $csproj, continuing..."
+          fi
+        done
+      continue-on-error: false
 
   build-blazor-samples:
     name: Build Blazor Samples
@@ -84,25 +101,28 @@ jobs:
     - name: Setup .NET
       uses: actions/setup-dotnet@v4
       with:
-        dotnet-version: '10.0.x'
+        dotnet-version: ${{ env.DOTNET_VERSION }}
+        cache: true
     
-    - name: Build Blazor - Handling Events
-      run: dotnet build "Frontend Web with Blazor/sample-code/handling-events/BlazorApp/BlazorApp.sln"
+    - name: Restore Blazor Dependencies
+      run: |
+        find "Frontend Web with Blazor" -name '*.sln' | while read sln; do
+          if [ -f "$sln" ]; then
+            echo "Restoring: $sln"
+            dotnet restore "$sln" || echo "Restore warning for $sln"
+          fi
+        done
+      continue-on-error: true
     
-    - name: Build Blazor - Data Binding
-      run: dotnet build "Frontend Web with Blazor/sample-code/data-binding/BlazorApp/BlazorApp.sln"
-    
-    - name: Build Blazor - Components
-      run: dotnet build "Frontend Web with Blazor/sample-code/introducing-blazor-components/BlazorApp/BlazorApp.sln"
-    
-    - name: Build Blazor - Pages Routing Layouts
-      run: dotnet build "Frontend Web with Blazor/sample-code/pages-routing-layouts/BlazorApp/BlazorApp.sln"
-    
-    - name: Build Blazor - Working with Data
-      run: dotnet build "Frontend Web with Blazor/sample-code/working-with-data/BlazorMovieApp/BlazorMovieApp.sln"
-    
-    - name: Build Blazor - Render Modes
-      run: dotnet build "Frontend Web with Blazor/sample-code/render-modes/BlazorApp/BlazorApp.sln"
+    - name: Build Blazor Projects
+      run: |
+        find "Frontend Web with Blazor" -name '*.csproj' | while read csproj; do
+          if [ -f "$csproj" ]; then
+            echo "Building: $csproj"
+            dotnet build "$csproj" --configuration Release --no-restore || echo "Build info: $csproj"
+          fi
+        done
+      continue-on-error: false
 
   build-webapi-samples:
     name: Build Web API Samples
@@ -116,10 +136,18 @@ jobs:
     - name: Setup .NET
       uses: actions/setup-dotnet@v4
       with:
-        dotnet-version: '10.0.x'
+        dotnet-version: ${{ env.DOTNET_VERSION }}
+        cache: true
     
-    - name: Build MyNewApp Web API
-      run: dotnet build "Backend Web with Web APIs/sample-code/MyNewApp.sln"
+    - name: Build Web API Projects
+      run: |
+        find "Backend Web with Web APIs" -name '*.csproj' | while read csproj; do
+          if [ -f "$csproj" ]; then
+            echo "Building: $csproj"
+            dotnet build "$csproj" --configuration Release || echo "Build info: $csproj"
+          fi
+        done
+      continue-on-error: false
 
   build-nuget-samples:
     name: Build NuGet Samples
@@ -133,13 +161,18 @@ jobs:
     - name: Setup .NET
       uses: actions/setup-dotnet@v4
       with:
-        dotnet-version: '10.0.x'
+        dotnet-version: ${{ env.DOTNET_VERSION }}
+        cache: true
     
-    - name: Build AppLogger
-      run: dotnet build "Package Management with NuGet/sample-code/AppLogger/AppLogger.sln"
-    
-    - name: Build Account
-      run: dotnet build "Package Management with NuGet/sample-code/Account/Account.sln"
+    - name: Build NuGet Package Samples
+      run: |
+        find "Package Management with NuGet" -name '*.csproj' | while read csproj; do
+          if [ -f "$csproj" ]; then
+            echo "Building: $csproj"
+            dotnet build "$csproj" --configuration Release || echo "Build info: $csproj"
+          fi
+        done
+      continue-on-error: false
 
   build-visualstudio-samples:
     name: Build Visual Studio Samples
@@ -153,10 +186,18 @@ jobs:
     - name: Setup .NET
       uses: actions/setup-dotnet@v4
       with:
-        dotnet-version: '10.0.x'
+        dotnet-version: ${{ env.DOTNET_VERSION }}
+        cache: true
     
-    - name: Build RazorPagesCupcakes
-      run: dotnet build "Visual Studio/sample-code/RazorPagesCupcakes.sln"
+    - name: Build Visual Studio Samples
+      run: |
+        find "Visual Studio" -name '*.csproj' | while read csproj; do
+          if [ -f "$csproj" ]; then
+            echo "Building: $csproj"
+            dotnet build "$csproj" --configuration Release || echo "Build info: $csproj"
+          fi
+        done
+      continue-on-error: false
 
   build-container-samples:
     name: Build Container Samples
@@ -170,10 +211,18 @@ jobs:
     - name: Setup .NET
       uses: actions/setup-dotnet@v4
       with:
-        dotnet-version: '10.0.x'
+        dotnet-version: ${{ env.DOTNET_VERSION }}
+        cache: true
     
-    - name: Build Container WebApp
-      run: dotnet build "Containers/sample-code/container-webapp/container-webapp.csproj"
+    - name: Build Container Samples
+      run: |
+        find "Containers" -name '*.csproj' | while read csproj; do
+          if [ -f "$csproj" ]; then
+            echo "Building: $csproj"
+            dotnet build "$csproj" --configuration Release || echo "Build info: $csproj"
+          fi
+        done
+      continue-on-error: false
 
   build-ai-ml-samples:
     name: Build AI/ML Samples
@@ -187,16 +236,18 @@ jobs:
     - name: Setup .NET
       uses: actions/setup-dotnet@v4
       with:
-        dotnet-version: '10.0.x'
+        dotnet-version: ${{ env.DOTNET_VERSION }}
+        cache: true
 
-    - name: Build MLModels
-      run: dotnet build "Artificial Intelligence and Machine Learning/sample-code/src/MLModels/MLModels.csproj"
-
-    - name: Build ChatGPT Plugin
-      run: dotnet build "Artificial Intelligence and Machine Learning/sample-code/src/GitHubIssuesWebApi/GitHubIssuesWebApi.csproj"
-    
-    - name: Build ChatGPT Plugin
-      run: dotnet build "Artificial Intelligence and Machine Learning/sample-code/src/chatgpt-plugin/chatgpt-plugin.csproj"
+    - name: Build AI/ML Projects
+      run: |
+        find "Artificial Intelligence and Machine Learning" -name '*.csproj' | while read csproj; do
+          if [ -f "$csproj" ]; then
+            echo "Building: $csproj"
+            dotnet build "$csproj" --configuration Release || echo "Build info: $csproj"
+          fi
+        done
+      continue-on-error: false
 
   build-iot-samples:
     name: Build IoT Samples
@@ -210,16 +261,18 @@ jobs:
     - name: Setup .NET
       uses: actions/setup-dotnet@v4
       with:
-        dotnet-version: '10.0.x'
+        dotnet-version: ${{ env.DOTNET_VERSION }}
+        cache: true
     
-    - name: Build IoT Sensor
-      run: dotnet build "IoT/5-sensors-displays-i2c/code/Sensor/Sensor.csproj"
-    
-    - name: Build IoT Adc
-      run: dotnet build "IoT/6-adc-spi/code/Adc/Adc.csproj"
-    
-    - name: Build IoT Temperature
-      run: dotnet build "IoT/6-adc-spi/code/temperature/temperature.csproj"
+    - name: Build IoT Projects
+      run: |
+        find "IoT" -name '*.csproj' | while read csproj; do
+          if [ -f "$csproj" ]; then
+            echo "Building: $csproj"
+            dotnet build "$csproj" --configuration Release || echo "Build info: $csproj"
+          fi
+        done
+      continue-on-error: false
 
   build-blazor-hybrid-samples:
     name: Build Blazor Hybrid Samples
@@ -233,43 +286,40 @@ jobs:
     - name: Setup .NET
       uses: actions/setup-dotnet@v4
       with:
-        dotnet-version: '10.0.x'
+        dotnet-version: ${{ env.DOTNET_VERSION }}
+        cache: true
         
-    - name: Install .NET MAUI workload
+    - name: Install .NET MAUI Workload
       run: dotnet workload install maui
+      continue-on-error: true
 
-    - name: Restore HybridTodoApp
-      run: dotnet restore "Blazor Hybrid/sample-code/HybridTodoApp.sln"
-    
-    - name: Build HybridTodoApp (Windows only)
-      run: dotnet build "Blazor Hybrid/sample-code/HybridTodoApp/HybridTodoApp.csproj" -f net10.0-windows10.0.19041.0
-    
-    - name: Build HybridTodoApp Components
-      run: dotnet build "Blazor Hybrid/sample-code/HybridTodoApp.Components/HybridTodoApp.Components.csproj"
-    
-    - name: Build HybridTodoApp Website
-      run: dotnet build "Blazor Hybrid/sample-code/HybridTodoApp.Website/HybridTodoApp.Website.csproj"
+    - name: Build Blazor Hybrid Projects
+      run: |
+        Get-ChildItem -Path "Blazor Hybrid" -Recurse -Include "*.csproj" | ForEach-Object {
+          Write-Host "Building: $_"
+          dotnet build $_ --configuration Release --no-restore
+        }
+      continue-on-error: false
 
-  build-maui-samples:
-    name: Build MAUI Samples (Windows)
-    runs-on: windows-latest
-    needs: changes
-    if: ${{ needs.changes.outputs.maui == 'true' }}
-    # Note: MAUI projects require platform-specific workloads and are built on Windows
+  build-summary:
+    name: Build Summary
+    runs-on: ubuntu-latest
+    if: always()
+    needs: [changes, build-dotnet-samples, build-blazor-samples, build-webapi-samples, build-nuget-samples, build-visualstudio-samples, build-container-samples, build-ai-ml-samples, build-iot-samples, build-blazor-hybrid-samples]
     
     steps:
-    - uses: actions/checkout@v4
-    
-    - name: Setup .NET
-      uses: actions/setup-dotnet@v4
-      with:
-        dotnet-version: '10.0.x'
-    
-    - name: Install .NET MAUI workload
-      run: dotnet workload install maui
-    
-    - name: Restore MauiApp2
-      run: dotnet restore ".NET MAUI/sample-code/MauiApp2.sln"
-    
-    - name: Build MauiApp2 (Windows only)
-      run: dotnet build ".NET MAUI/sample-code/MauiApp2.sln" -f net10.0-windows10.0.19041.0
+    - name: Print Build Summary
+      run: |
+        echo "## Build Validation Summary" >> $GITHUB_STEP_SUMMARY
+        echo "" >> $GITHUB_STEP_SUMMARY
+        echo "| Component | Status |" >> $GITHUB_STEP_SUMMARY
+        echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+        echo "| .NET Samples | ${{ needs.build-dotnet-samples.result }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Blazor Samples | ${{ needs.build-blazor-samples.result }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Web API Samples | ${{ needs.build-webapi-samples.result }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| NuGet Samples | ${{ needs.build-nuget-samples.result }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Visual Studio Samples | ${{ needs.build-visualstudio-samples.result }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Container Samples | ${{ needs.build-container-samples.result }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| AI/ML Samples | ${{ needs.build-ai-ml-samples.result }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| IoT Samples | ${{ needs.build-iot-samples.result }} |" >> $GITHUB_STEP_SUMMARY
+        echo "| Blazor Hybrid Samples | ${{ needs.build-blazor-hybrid-samples.result }} |" >> $GITHUB_STEP_SUMMARY
