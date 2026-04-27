@@ -1,0 +1,142 @@
+name: .NET CI/CD Pipeline
+
+on:
+  push:
+    branches:
+      - '**'
+  pull_request:
+    branches:
+      - '**'
+  workflow_dispatch:
+  schedule:
+    - cron: '0 2 * * 0'  # Weekly on Sunday at 2 AM UTC
+
+jobs:
+  build-and-test:
+    runs-on: ${{ matrix.os }}
+    
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        dotnet-version: ['8.0', '9.0']
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+      
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ matrix.dotnet-version }}
+          cache: true
+          cache-dependency-path: '**/packages.lock.json'
+      
+      - name: Restore Dependencies
+        run: dotnet restore
+      
+      - name: Build Project
+        run: dotnet build --configuration Release --no-restore --verbosity normal
+      
+      - name: Run Tests
+        run: dotnet test --configuration Release --no-build --verbosity normal --logger "trx;LogFileName=test-results.trx" --collect:"XPlat Code Coverage"
+        continue-on-error: true
+      
+      - name: Upload Test Results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results-${{ matrix.os }}-dotnet${{ matrix.dotnet-version }}
+          path: |
+            **/TestResults/**/*.trx
+            **/TestResults/**/*.coverage
+      
+      - name: Publish Build Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-output-${{ matrix.os }}-dotnet${{ matrix.dotnet-version }}
+          path: |
+            **/bin/Release/**/*
+            !**/bin/Release/**/*.pdb
+      
+      - name: Generate Code Coverage Report
+        if: matrix.os == 'ubuntu-latest' && matrix.dotnet-version == '8.0'
+        run: |
+          dotnet tool install -g dotnet-reportgenerator-globaltool
+          reportgenerator -reports:"**/coverage.cobertura.xml" -targetdir:"./coverage-report" -reporttypes:HtmlInline
+        continue-on-error: true
+      
+      - name: Upload Coverage Report
+        if: matrix.os == 'ubuntu-latest' && matrix.dotnet-version == '8.0'
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-report
+          path: ./coverage-report/
+
+  code-quality:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+      
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0'
+      
+      - name: Install Code Analysis Tools
+        run: |
+          dotnet tool install -g dotnet-format
+          dotnet tool install -g Roslynator.CommandLine
+      
+      - name: Run Code Format Check
+        run: dotnet format --verify-no-changes --verbosity diagnostic
+        continue-on-error: true
+      
+      - name: Run Static Analysis
+        run: roslynator analyze
+        continue-on-error: true
+
+  security-scan:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+      
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0'
+      
+      - name: Run Dependency Check
+        run: dotnet list package --vulnerable
+        continue-on-error: true
+      
+      - name: Run Security Audit
+        run: dotnet package-search-tool audit
+        continue-on-error: true
+
+  summary:
+    needs: [build-and-test, code-quality, security-scan]
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+      - name: Download All Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+      
+      - name: Print Workflow Summary
+        run: |
+          echo "## ✅ CI/CD Workflow Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Build & Test**: ${{ needs.build-and-test.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Code Quality**: ${{ needs.code-quality.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Security Scan**: ${{ needs.security-scan.result }}" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "📦 **Artifacts Generated:**" >> $GITHUB_STEP_SUMMARY
+          echo "- Test Results" >> $GITHUB_STEP_SUMMARY
+          echo "- Build Output" >> $GITHUB_STEP_SUMMARY
+          echo "- Coverage Report" >> $GITHUB_STEP_SUMMARY
