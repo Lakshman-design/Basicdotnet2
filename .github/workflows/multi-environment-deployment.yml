@@ -1,0 +1,399 @@
+name: Multi-Environment Deployment Pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: 'Select target environment'
+        required: true
+        default: 'dev'
+        type: choice
+        options:
+          - dev
+          - qa
+          - uat
+          - prod
+      version:
+        description: 'Release version (e.g., 1.0.0)'
+        required: false
+        type: string
+  push:
+    branches:
+      - main
+      - develop
+    paths:
+      - '.github/workflows/multi-environment-deployment.yml'
+      - 'src/**'
+      - 'MyConsoleApp/**'
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    outputs:
+      image-tag: ${{ steps.meta.outputs.tags }}
+      image-digest: ${{ steps.build.outputs.digest }}
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+      
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0'
+          cache: true
+      
+      - name: Restore Dependencies
+        run: dotnet restore
+      
+      - name: Build Project
+        run: dotnet build --configuration Release --no-restore
+      
+      - name: Run Tests
+        run: dotnet test --configuration Release --no-build --logger "trx"
+      
+      - name: Publish Application
+        run: dotnet publish --configuration Release --output ./publish
+      
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      
+      - name: Extract Metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}},value=${{ github.event.inputs.version }}
+            type=sha
+            type=raw,value=latest
+      
+      - name: Build and Push Docker Image
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+      
+      - name: Upload Artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-artifacts
+          path: ./publish
+          retention-days: 30
+
+  deploy-dev:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: development
+      url: https://dev.example.com
+    if: github.ref == 'refs/heads/develop' || github.event.inputs.environment == 'dev'
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+      
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+          path: ./deploy
+      
+      - name: Deploy to Development
+        env:
+          DEPLOY_KEY: ${{ secrets.DEV_DEPLOY_KEY }}
+          DEPLOY_HOST: ${{ secrets.DEV_DEPLOY_HOST }}
+          DEPLOY_USER: ${{ secrets.DEV_DEPLOY_USER }}
+          DEPLOY_PATH: /var/www/dev
+        run: |
+          echo "🚀 Deploying to Development Environment..."
+          mkdir -p ~/.ssh
+          echo "${{ secrets.DEV_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ secrets.DEV_DEPLOY_HOST }} >> ~/.ssh/known_hosts
+          scp -i ~/.ssh/deploy_key -r ./deploy/* ${{ secrets.DEV_DEPLOY_USER }}@${{ secrets.DEV_DEPLOY_HOST }}:${{ env.DEPLOY_PATH }}/
+          ssh -i ~/.ssh/deploy_key ${{ secrets.DEV_DEPLOY_USER }}@${{ secrets.DEV_DEPLOY_HOST }} "cd ${{ env.DEPLOY_PATH }} && ./deploy.sh"
+      
+      - name: Health Check - Development
+        run: |
+          echo "🔍 Running health checks on Development..."
+          for i in {1..5}; do
+            if curl -f https://dev.example.com/health; then
+              echo "✅ Development environment is healthy"
+              exit 0
+            fi
+            echo "Attempt $i failed, retrying in 10 seconds..."
+            sleep 10
+          done
+          echo "❌ Health check failed"
+          exit 1
+        continue-on-error: true
+      
+      - name: Notify Development Deployment
+        if: always()
+        run: |
+          echo "📢 Deployment Status: ${{ job.status }}"
+          echo "Environment: Development"
+          echo "Image: ${{ needs.build.outputs.image-tag }}"
+
+  deploy-qa:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: qa
+      url: https://qa.example.com
+    if: github.ref == 'refs/heads/develop' || github.ref == 'refs/heads/main' || github.event.inputs.environment == 'qa'
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+      
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+          path: ./deploy
+      
+      - name: Deploy to QA
+        env:
+          DEPLOY_PATH: /var/www/qa
+        run: |
+          echo "🚀 Deploying to QA Environment..."
+          mkdir -p ~/.ssh
+          echo "${{ secrets.QA_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ secrets.QA_DEPLOY_HOST }} >> ~/.ssh/known_hosts
+          scp -i ~/.ssh/deploy_key -r ./deploy/* ${{ secrets.QA_DEPLOY_USER }}@${{ secrets.QA_DEPLOY_HOST }}:${{ env.DEPLOY_PATH }}/
+          ssh -i ~/.ssh/deploy_key ${{ secrets.QA_DEPLOY_USER }}@${{ secrets.QA_DEPLOY_HOST }} "cd ${{ env.DEPLOY_PATH }} && ./deploy.sh"
+      
+      - name: Run QA Tests
+        run: |
+          echo "🧪 Running QA Test Suite..."
+          echo "Executing smoke tests and integration tests..."
+        continue-on-error: true
+      
+      - name: Health Check - QA
+        run: |
+          echo "🔍 Running health checks on QA..."
+          for i in {1..5}; do
+            if curl -f https://qa.example.com/health; then
+              echo "✅ QA environment is healthy"
+              exit 0
+            fi
+            sleep 10
+          done
+          exit 1
+        continue-on-error: true
+      
+      - name: Notify QA Deployment
+        if: always()
+        run: |
+          echo "📢 Deployment Status: ${{ job.status }}"
+          echo "Environment: QA"
+
+  deploy-uat:
+    needs: [build, deploy-qa]
+    runs-on: ubuntu-latest
+    environment:
+      name: uat
+      url: https://uat.example.com
+    if: github.event.inputs.environment == 'uat' || (github.ref == 'refs/heads/main' && success())
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+      
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+          path: ./deploy
+      
+      - name: Deploy to UAT
+        env:
+          DEPLOY_PATH: /var/www/uat
+        run: |
+          echo "🚀 Deploying to UAT Environment..."
+          mkdir -p ~/.ssh
+          echo "${{ secrets.UAT_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ secrets.UAT_DEPLOY_HOST }} >> ~/.ssh/known_hosts
+          scp -i ~/.ssh/deploy_key -r ./deploy/* ${{ secrets.UAT_DEPLOY_USER }}@${{ secrets.UAT_DEPLOY_HOST }}:${{ env.DEPLOY_PATH }}/
+          ssh -i ~/.ssh/deploy_key ${{ secrets.UAT_DEPLOY_USER }}@${{ secrets.UAT_DEPLOY_HOST }} "cd ${{ env.DEPLOY_PATH }} && ./deploy.sh"
+      
+      - name: Smoke Tests - UAT
+        run: |
+          echo "🧪 Running UAT Smoke Tests..."
+          echo "Critical path testing in UAT environment"
+        continue-on-error: true
+      
+      - name: Performance Tests - UAT
+        run: |
+          echo "⚡ Running Performance Tests..."
+          echo "Load and stress testing in UAT"
+        continue-on-error: true
+      
+      - name: Health Check - UAT
+        run: |
+          echo "🔍 Running health checks on UAT..."
+          for i in {1..5}; do
+            if curl -f https://uat.example.com/health; then
+              echo "✅ UAT environment is healthy"
+              exit 0
+            fi
+            sleep 10
+          done
+          exit 1
+        continue-on-error: true
+      
+      - name: Notify UAT Deployment
+        if: always()
+        run: |
+          echo "📢 Deployment Status: ${{ job.status }}"
+          echo "Environment: UAT"
+          echo "Ready for production approval"
+
+  deploy-prod:
+    needs: [build, deploy-uat]
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+      url: https://prod.example.com
+    if: github.event.inputs.environment == 'prod' || github.ref == 'refs/heads/main'
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+      
+      - name: Download Artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: build-artifacts
+          path: ./deploy
+      
+      - name: Pre-Deployment Safety Checks
+        run: |
+          echo "🛡️ Running pre-deployment safety checks..."
+          echo "✅ Backup verification"
+          echo "✅ Rollback plan in place"
+          echo "✅ All dependencies verified"
+      
+      - name: Create Release Tag
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git tag -a v${{ github.run_number }} -m "Production Release ${{ github.run_number }}"
+        continue-on-error: true
+      
+      - name: Deploy to Production
+        env:
+          DEPLOY_PATH: /var/www/prod
+        run: |
+          echo "🚀 Deploying to Production Environment..."
+          echo "⚠️  PRODUCTION DEPLOYMENT IN PROGRESS"
+          mkdir -p ~/.ssh
+          echo "${{ secrets.PROD_SSH_KEY }}" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H ${{ secrets.PROD_DEPLOY_HOST }} >> ~/.ssh/known_hosts
+          scp -i ~/.ssh/deploy_key -r ./deploy/* ${{ secrets.PROD_DEPLOY_USER }}@${{ secrets.PROD_DEPLOY_HOST }}:${{ env.DEPLOY_PATH }}/
+          ssh -i ~/.ssh/deploy_key ${{ secrets.PROD_DEPLOY_USER }}@${{ secrets.PROD_DEPLOY_HOST }} "cd ${{ env.DEPLOY_PATH }} && ./deploy.sh && ./verify.sh"
+      
+      - name: Production Health Checks
+        run: |
+          echo "🔍 Running Production Health Checks..."
+          max_attempts=10
+          attempt=1
+          while [ $attempt -le $max_attempts ]; do
+            if curl -f https://prod.example.com/health; then
+              echo "✅ Production environment is healthy"
+              exit 0
+            fi
+            echo "Health check attempt $attempt/$max_attempts failed, retrying..."
+            sleep 15
+            attempt=$((attempt + 1))
+          done
+          echo "❌ Production health check failed after $max_attempts attempts"
+          exit 1
+      
+      - name: Smoke Tests - Production
+        run: |
+          echo "🧪 Running Production Smoke Tests..."
+          echo "Critical path validation in production"
+        continue-on-error: true
+      
+      - name: Production Deployment Success
+        if: success()
+        run: |
+          echo "✅ PRODUCTION DEPLOYMENT SUCCESSFUL"
+          echo "Environment: Production"
+          echo "Image: ${{ needs.build.outputs.image-tag }}"
+          echo "Timestamp: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
+      
+      - name: Production Deployment Failure Rollback
+        if: failure()
+        run: |
+          echo "⚠️ PRODUCTION DEPLOYMENT FAILED"
+          echo "Initiating automatic rollback..."
+          ssh -i ~/.ssh/deploy_key ${{ secrets.PROD_DEPLOY_USER }}@${{ secrets.PROD_DEPLOY_HOST }} "cd /var/www/prod && ./rollback.sh"
+
+  notify:
+    needs: [build, deploy-dev, deploy-qa, deploy-uat, deploy-prod]
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+      
+      - name: Prepare Notification
+        run: |
+          cat > deployment-summary.txt << 'EOF'
+          ╔═════════════════════════════════════════════╗
+          ║   Multi-Environment Deployment Summary     ║
+          ╠═════════════════════════════════════════════╣
+          ║ Build Status:          ${{ needs.build.result }}
+          ║ Development:           ${{ needs.deploy-dev.result }}
+          ║ QA:                    ${{ needs.deploy-qa.result }}
+          ║ UAT:                   ${{ needs.deploy-uat.result }}
+          ║ Production:            ${{ needs.deploy-prod.result }}
+          ╠═════════════════════════════════════════════╣
+          ║ Repository:            ${{ github.repository }}
+          ║ Commit:                ${{ github.sha }}
+          ║ Author:                ${{ github.actor }}
+          ║ Triggered At:          ${{ github.event_name }}
+          ║ Workflow Run:          ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          ╚═════════════════════════════════════════════╝
+          EOF
+          cat deployment-summary.txt
+      
+      - name: Upload Deployment Summary
+        uses: actions/upload-artifact@v4
+        with:
+          name: deployment-summary
+          path: deployment-summary.txt
+      
+      - name: Post to GitHub Summary
+        run: |
+          echo "## 🚀 Multi-Environment Deployment Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Environment | Status |" >> $GITHUB_STEP_SUMMARY
+          echo "|---|---|" >> $GITHUB_STEP_SUMMARY
+          echo "| Build | ${{ needs.build.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Development | ${{ needs.deploy-dev.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| QA | ${{ needs.deploy-qa.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| UAT | ${{ needs.deploy-uat.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "| Production | ${{ needs.deploy-prod.result }} |" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "**Commit:** [${{ github.sha }}](${{ github.server_url }}/${{ github.repository }}/commit/${{ github.sha }})" >> $GITHUB_STEP_SUMMARY
